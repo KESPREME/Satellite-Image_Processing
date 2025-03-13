@@ -3,12 +3,12 @@ torch==2.1.0+cu118
 torchvision==0.16.0+cu118
 xformers==0.0.22.post7
 
-diffusers==0.24.0
-transformers==4.35.2
-accelerate==0.25.0
-huggingface-hub==0.20.3
-safetensors==0.4.2
+diffusers==0.19.3
+transformers==4.28.1
+accelerate==0.21.0
+huggingface-hub==0.15.1
+safetensors==0.3.3
 
 streamlit==1.29.0
 numpy==1.23.5
-pillow==10.1.0
+pillow==9.5.0
