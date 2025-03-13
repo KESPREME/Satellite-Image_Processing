@@ -1,142 +1,102 @@
-# Fix for cached_download import error
 import sys
-from huggingface_hub import hf_hub_download
-sys.modules['huggingface_hub'].cached_download = hf_hub_download
-
-# Import remaining libraries
 import streamlit as st
 import torch
 import numpy as np
 from PIL import Image
+from huggingface_hub import hf_hub_download
 from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
 from transformers import AutoImageProcessor, UperNetForSemanticSegmentation
 
-# Load models with caching for performance
-@st.cache_resource
-def load_models():
+# Fix for Hugging Face Hub compatibility
+sys.modules['huggingface_hub'].cached_download = hf_hub_download
+
+# Memory-efficient model loading
+@st.cache_resource(show_spinner=False)
+def load_generation_model():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    torch.backends.cuda.matmul.allow_tf32 = True  # Enable TensorFloat-32 for NVIDIA GPUs
-    
-    # Load optimized image generation pipeline
-    pipe = StableDiffusionPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5",  # Stable base model
+    model = StableDiffusionPipeline.from_pretrained(
+        "segmind/SSD-1B",
         torch_dtype=torch.float16,
-        use_safetensors=True,
+        variant="fp16",
         safety_checker=None
     )
-    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
-    pipe = pipe.to(device)
-    pipe.enable_xformers_memory_efficient_attention()
-    
-    # Load lightweight segmentation model
-    segmenter = UperNetForSemanticSegmentation.from_pretrained(
+    model.scheduler = DPMSolverMultistepScheduler.from_config(model.scheduler.config)
+    model.enable_xformers_memory_efficient_attention()
+    model = model.to(device)
+    model.enable_model_cpu_offload()
+    return model
+
+@st.cache_resource(show_spinner=False)
+def load_segmentation_model():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = UperNetForSemanticSegmentation.from_pretrained(
         "openmmlab/upernet-convnext-tiny",
         torch_dtype=torch.float16
-    ).to(device)
-    image_processor = AutoImageProcessor.from_pretrained("openmmlab/upernet-convnext-tiny")
-    
-    return pipe, segmenter, image_processor, device
+    )
+    processor = AutoImageProcessor.from_pretrained("openmmlab/upernet-convnext-tiny")
+    return model.to(device), processor
 
-# Initialize models
-pipe, segmenter, image_processor, device = load_models()
-
-# Streamlit UI Configuration
+# Streamlit UI
 st.set_page_config(page_title="Satellite Processor", layout="wide")
-st.title("🌍 Satellite Image Processing Suite")
+st.title("🌍 Satellite Image Processor")
 
-# Sidebar with Settings
-with st.sidebar:
-    st.header("Settings")
-    generate_steps = st.slider("Generation Steps", 20, 50, 25, 
-                             help="Fewer steps = faster but less detailed")
-    seed = st.number_input("Random Seed", value=42,
-                         help="Change for different variations")
-    st.markdown("---")
-    st.caption(f"Running on: {device.upper()}")
+# Lazy-load models only when needed
+if "generator" not in st.session_state:
+    with st.spinner("Initializing system (this might take a minute)..."):
+        st.session_state.generator = load_generation_model()
+        st.session_state.segmenter, st.session_state.processor = load_segmentation_model()
 
 # Main Tabs
 tab1, tab2 = st.tabs(["Generate", "Analyze"])
 
-# Image Generation Tab
 with tab1:
     st.header("Generate Satellite Imagery")
-    col1, col2 = st.columns([3, 2])
+    prompt = st.text_area("Description:", "High-resolution satellite view of coastal city", height=100)
+    steps = st.slider("Generation Steps", 15, 30, 20)
     
-    with col1:
-        prompt = st.text_area("Description:", 
-                            "High-resolution satellite view of coastal city with modern infrastructure and green parks",
-                            height=100)
-        
-        if st.button("Generate Image", use_container_width=True):
-            with st.spinner(f"Generating (est. 15-30s on {device.upper()})..."):
-                try:
-                    generator = torch.Generator(device).manual_seed(int(seed))
-                    image = pipe(
-                        prompt=prompt,
-                        num_inference_steps=int(generate_steps),
-                        guidance_scale=7.5,
-                        generator=generator
-                    ).images[0]
-                    st.session_state.generated_image = image
-                except Exception as e:
-                    st.error(f"Generation failed: {str(e)}")
-    
-    with col2:
-        if "generated_image" in st.session_state:
-            st.image(st.session_state.generated_image, 
-                   caption="Generated Satellite Image",
-                   use_column_width=True)
-            st.download_button("Download Image", 
-                             Image.fromarray(np.array(st.session_state.generated_image)),
-                             file_name="generated_satellite.png")
+    if st.button("Generate"):
+        with st.spinner(f"Generating ({steps} steps)..."):
+            try:
+                image = st.session_state.generator(
+                    prompt=prompt,
+                    num_inference_steps=steps,
+                    guidance_scale=7.5
+                ).images[0]
+                st.image(image, use_column_width=True)
+                st.session_state.last_image = image
+            except torch.cuda.OutOfMemoryError:
+                st.error("Memory limit exceeded! Try fewer steps or smaller resolution")
 
-# Analysis Tab
 with tab2:
     st.header("Land Cover Analysis")
-    uploaded_file = st.file_uploader("Upload satellite image", 
-                                   type=["jpg", "png", "jpeg"])
+    uploaded_file = st.file_uploader("Upload image", type=["jpg", "png"])
     
     if uploaded_file:
-        try:
-            image = Image.open(uploaded_file).convert("RGB")
-            st.image(image, caption="Uploaded Image", use_column_width=True)
-            
-            if st.button("Analyze Land Cover", type="primary"):
-                with st.spinner(f"Processing (est. 5-10s on {device.upper()})..."):
-                    inputs = image_processor(image, return_tensors="pt").to(device)
+        image = Image.open(uploaded_file).convert("RGB")
+        st.image(image, use_column_width=True)
+        
+        if st.button("Analyze"):
+            with st.spinner("Processing..."):
+                try:
+                    # Reduce memory usage by resizing first
+                    processed_image = st.session_state.processor(image.resize((256, 256)), return_tensors="pt").to(st.session_state.segmenter.device)
                     with torch.no_grad():
-                        outputs = segmenter(**inputs)
+                        outputs = st.session_state.segmenter(**processed_image)
                     
                     seg_map = torch.argmax(outputs.logits, dim=1).squeeze().cpu().numpy()
                     
-                    # Create color overlay
-                    color_palette = np.array([
-                        [0, 0, 0],        # Background
-                        [34, 139, 34],    # Vegetation
-                        [255, 165, 0],    # Urban
-                        [0, 0, 255],      # Water
-                        [255, 255, 0]     # Barren Land
+                    # Efficient color mapping
+                    colors = np.array([
+                        [0,0,0], [34,139,34], [255,165,0], 
+                        [0,0,255], [255,255,0]
                     ], dtype=np.uint8)
                     
-                    colored_mask = color_palette[seg_map.astype(np.uint8)]  # Fix here
-                    st.image(colored_mask, 
+                    st.image(colors[seg_map.astype(np.uint8)], 
                            caption="Land Cover Analysis",
-                           use_column_width=True,
-                           clamp=True)
+                           use_column_width=True)
                     
-                    # Legend
-                    with st.expander("Color Legend"):
-                        st.markdown("""
-                        - ⬛ Background
-                        - 🟩 Vegetation
-                        - 🟧 Urban Areas
-                        - 🟦 Water Bodies
-                        - 🟨 Barren Land
-                        """)
-        
-        except Exception as e:
-            st.error(f"Analysis failed: {str(e)}")
+                except Exception as e:
+                    st.error(f"Analysis failed: {str(e)}")
 
-# System Info Footer
-st.divider()
-st.caption(f"System: {device.upper()} | Torch: {torch.__version__} | Streamlit: {st.__version__}")
+# System Info
+st.caption(f"Running on: {'GPU' if torch.cuda.is_available() else 'CPU'} | Memory: {torch.cuda.memory_allocated()/1e9:.1f}GB used")
