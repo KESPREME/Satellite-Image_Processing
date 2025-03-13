@@ -19,16 +19,12 @@ def load_models():
     
     # Load optimized image generation pipeline
     pipe = StableDiffusionPipeline.from_pretrained(
-        "segmind/SSD-1B",
+        "runwayml/stable-diffusion-v1-5",  # Stable base model
         torch_dtype=torch.float16,
         use_safetensors=True,
         safety_checker=None
     )
-    pipe.scheduler = DPMSolverMultistepScheduler.from_config(
-        pipe.scheduler.config,
-        use_karras_sigmas=True,
-        algorithm_type="sde-dpmsolver++"
-    )
+    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
     pipe = pipe.to(device)
     pipe.enable_xformers_memory_efficient_attention()
     
