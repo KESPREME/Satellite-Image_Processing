@@ -1,6 +1,12 @@
-# Monkey-patch cached_download to use hf_hub_download
+# Add this at the very top
 import sys
-from huggingface_hub import hf_hub_download
+try:
+    from huggingface_hub import hf_hub_download
+except ImportError:
+    !pip install huggingface_hub==0.15.1 --quiet
+    from huggingface_hub import hf_hub_download
+
+# Monkey-patch cached_download
 sys.modules['huggingface_hub'].cached_download = hf_hub_download
 
 import streamlit as st
