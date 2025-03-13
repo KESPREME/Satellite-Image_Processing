@@ -1,3 +1,9 @@
+# Fix cached_download first
+import sys
+from huggingface_hub import hf_hub_download
+sys.modules['huggingface_hub'].cached_download = hf_hub_download
+
+# Then other imports
 import streamlit as st
 import torch
 import numpy as np
