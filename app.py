@@ -1,14 +1,22 @@
+# Fix for Hugging Face Hub first
 import sys
+from huggingface_hub import hf_hub_download
+sys.modules['huggingface_hub'].cached_download = hf_hub_download
+
+# Streamlit config MUST come next
 import streamlit as st
+st.set_page_config(
+    page_title="Satellite Processor",
+    page_icon="🌍",
+    layout="wide"
+)
+
+# Other imports after Streamlit config
 import torch
 import numpy as np
 from PIL import Image
-from huggingface_hub import hf_hub_download
 from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
 from transformers import AutoImageProcessor, UperNetForSemanticSegmentation
-
-# Fix for Hugging Face Hub compatibility
-sys.modules['huggingface_hub'].cached_download = hf_hub_download
 
 # Load models with caching for performance
 @st.cache_resource
@@ -16,10 +24,11 @@ def load_models():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch_dtype = torch.float16 if device == "cuda" else torch.float32
     
-    # Load image generation pipeline
+    # Load optimized image generation pipeline
     pipe = StableDiffusionPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5",
+        "runwayml/stable-diffusion-v1-5",  # Stable base model
         torch_dtype=torch_dtype,
+        use_safetensors=True,
         safety_checker=None
     )
     
@@ -35,25 +44,25 @@ def load_models():
             algorithm_type="dpmsolver++"
         )
     
-    # Load segmentation model
+    # Load lightweight segmentation model
     segmenter = UperNetForSemanticSegmentation.from_pretrained(
         "openmmlab/upernet-convnext-tiny",
         torch_dtype=torch_dtype
     ).to(device)
+    image_processor = AutoImageProcessor.from_pretrained("openmmlab/upernet-convnext-tiny")
     
-    return pipe, segmenter, AutoImageProcessor.from_pretrained("openmmlab/upernet-convnext-tiny"), device
+    return pipe, segmenter, image_processor, device
 
 # Initialize models
 pipe, segmenter, image_processor, device = load_models()
 
 # Streamlit UI Configuration
-st.set_page_config(page_title="Satellite Processor", layout="wide")
 st.title("🌍 Satellite Image Processing Suite")
 
 # Sidebar with Settings
 with st.sidebar:
     st.header("Settings")
-    generate_steps = st.slider("Generation Steps", 15, 30, 20, 
+    generate_steps = st.slider("Generation Steps", 20, 50, 25, 
                              help="Fewer steps = faster but less detailed")
     seed = st.number_input("Random Seed", value=42,
                          help="Change for different variations")
@@ -74,7 +83,7 @@ with tab1:
                             height=100)
         
         if st.button("Generate Image", use_container_width=True):
-            with st.spinner(f"Generating ({generate_steps} steps)..."):
+            with st.spinner(f"Generating (est. 15-30s on {device.upper()})..."):
                 try:
                     generator = torch.Generator(device).manual_seed(int(seed))
                     image = pipe(
@@ -108,8 +117,8 @@ with tab2:
             st.image(image, caption="Uploaded Image", use_column_width=True)
             
             if st.button("Analyze Land Cover", type="primary"):
-                with st.spinner("Processing..."):
-                    # Downsample large images for CPU efficiency
+                with st.spinner(f"Processing (est. 5-10s on {device.upper()})..."):
+                    # Downsample large images for efficiency
                     if image.size[0] > 1024 or image.size[1] > 1024:
                         image = image.resize((512, 512))
                         st.warning("Large image downsampled to 512px for memory efficiency")
