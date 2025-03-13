@@ -1,41 +1,47 @@
-# Fix for cached_download import error
 import sys
-from huggingface_hub import hf_hub_download
-sys.modules['huggingface_hub'].cached_download = hf_hub_download
-
-# Import remaining libraries
 import streamlit as st
 import torch
 import numpy as np
 from PIL import Image
+from huggingface_hub import hf_hub_download
 from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
 from transformers import AutoImageProcessor, UperNetForSemanticSegmentation
+
+# Fix for Hugging Face Hub compatibility
+sys.modules['huggingface_hub'].cached_download = hf_hub_download
 
 # Load models with caching for performance
 @st.cache_resource
 def load_models():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    torch.backends.cuda.matmul.allow_tf32 = True  # Enable TensorFloat-32 for NVIDIA GPUs
+    torch_dtype = torch.float16 if device == "cuda" else torch.float32
     
-    # Load optimized image generation pipeline
+    # Load image generation pipeline
     pipe = StableDiffusionPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5",  # Stable base model
-        torch_dtype=torch.float16,
-        use_safetensors=True,
+        "runwayml/stable-diffusion-v1-5",
+        torch_dtype=torch_dtype,
         safety_checker=None
     )
-    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
-    pipe = pipe.to(device)
-    pipe.enable_xformers_memory_efficient_attention()
     
-    # Load lightweight segmentation model
+    # Device-specific optimizations
+    if device == "cuda":
+        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+        pipe.enable_xformers_memory_efficient_attention()
+        pipe = pipe.to(device)
+    else:
+        st.warning("Using CPU mode - expect slower performance. Consider GPU acceleration.")
+        pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+            pipe.scheduler.config,
+            algorithm_type="dpmsolver++"
+        )
+    
+    # Load segmentation model
     segmenter = UperNetForSemanticSegmentation.from_pretrained(
         "openmmlab/upernet-convnext-tiny",
-        torch_dtype=torch.float16
+        torch_dtype=torch_dtype
     ).to(device)
-    image_processor = AutoImageProcessor.from_pretrained("openmmlab/upernet-convnext-tiny")
     
-    return pipe, segmenter, image_processor, device
+    return pipe, segmenter, AutoImageProcessor.from_pretrained("openmmlab/upernet-convnext-tiny"), device
 
 # Initialize models
 pipe, segmenter, image_processor, device = load_models()
@@ -47,7 +53,7 @@ st.title("🌍 Satellite Image Processing Suite")
 # Sidebar with Settings
 with st.sidebar:
     st.header("Settings")
-    generate_steps = st.slider("Generation Steps", 20, 50, 25, 
+    generate_steps = st.slider("Generation Steps", 15, 30, 20, 
                              help="Fewer steps = faster but less detailed")
     seed = st.number_input("Random Seed", value=42,
                          help="Change for different variations")
@@ -68,7 +74,7 @@ with tab1:
                             height=100)
         
         if st.button("Generate Image", use_container_width=True):
-            with st.spinner(f"Generating (est. 15-30s on {device.upper()})..."):
+            with st.spinner(f"Generating ({generate_steps} steps)..."):
                 try:
                     generator = torch.Generator(device).manual_seed(int(seed))
                     image = pipe(
@@ -102,7 +108,12 @@ with tab2:
             st.image(image, caption="Uploaded Image", use_column_width=True)
             
             if st.button("Analyze Land Cover", type="primary"):
-                with st.spinner(f"Processing (est. 5-10s on {device.upper()})..."):
+                with st.spinner("Processing..."):
+                    # Downsample large images for CPU efficiency
+                    if image.size[0] > 1024 or image.size[1] > 1024:
+                        image = image.resize((512, 512))
+                        st.warning("Large image downsampled to 512px for memory efficiency")
+                    
                     inputs = image_processor(image, return_tensors="pt").to(device)
                     with torch.no_grad():
                         outputs = segmenter(**inputs)
@@ -118,7 +129,7 @@ with tab2:
                         [255, 255, 0]     # Barren Land
                     ], dtype=np.uint8)
                     
-                    colored_mask = color_palette[seg_map.astype(np.uint8)]  # Fix here
+                    colored_mask = color_palette[seg_map.astype(np.uint8)]
                     st.image(colored_mask, 
                            caption="Land Cover Analysis",
                            use_column_width=True,
