@@ -1,14 +1,9 @@
---extra-index-url https://download.pytorch.org/whl/cu118
-torch==2.1.0+cu118
-torchvision==0.16.0+cu118
-xformers==0.0.22.post7
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.1.0
+torchvision==0.16.0
+xformers==0.0.22.post7; sys_platform != 'darwin' and platform.machine() != 'arm64'
 
 diffusers==0.19.3
 transformers==4.28.1
 accelerate==0.21.0
-huggingface-hub==0.15.1  # Last version with cached_download
-safetensors==0.3.3
-
-streamlit==1.29.0
-numpy==1.23.5
-pillow==9.5.0
+huggingface-hub==0.
