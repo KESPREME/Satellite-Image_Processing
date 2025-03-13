@@ -1,0 +1,10 @@
+streamlit==1.29.0
+torch==2.1.0
+torchvision==0.16.0
+diffusers==0.24.0
+transformers==4.35.2
+accelerate==0.25.0
+xformers==0.0.22.post7
+numpy==1.23.5
+safetensors==0.4.2
+huggingface_hub==0.19.4
